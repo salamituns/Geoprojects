@@ -1,0 +1,196 @@
+{
+	"info": {
+		"_postman_id": "geological-sample-api-v1",
+		"name": "Geological Sample Management API",
+		"description": "Postman collection for the Geological Sample Management REST API. This collection includes all CRUD operations for managing geological samples.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/healthcheck",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"healthcheck"
+					]
+				},
+				"description": "Check if the API is running and responsive."
+			},
+			"response": []
+		},
+		{
+			"name": "Samples",
+			"item": [
+				{
+					"name": "Create Sample",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"sampleIdentifier\": \"GS-2024-001\",\n  \"sampleName\": \"Granite Sample\",\n  \"sampleType\": \"ROCK\",\n  \"collectionDate\": \"2024-01-15\",\n  \"latitude\": 40.7128,\n  \"longitude\": -74.0060,\n  \"locationName\": \"Central Park\",\n  \"collectorName\": \"Dr. Jane Smith\",\n  \"description\": \"Fine-grained granite sample collected from outcrop\",\n  \"storageLocation\": \"Lab-A-Shelf-12\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/samples",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"samples"
+							]
+						},
+						"description": "Create a new geological sample. Returns 201 Created with the created sample."
+					},
+					"response": []
+				},
+				{
+					"name": "Get All Samples",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/samples?page=0&size=20&sort=id,desc",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"samples"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "0",
+									"description": "Page number (0-indexed)"
+								},
+								{
+									"key": "size",
+									"value": "20",
+									"description": "Page size"
+								},
+								{
+									"key": "sort",
+									"value": "id,desc",
+									"description": "Sort field and direction"
+								}
+							]
+						},
+						"description": "Get all geological samples with pagination support. Returns a paginated response."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Sample by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/samples/{{sampleId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"samples",
+								"{{sampleId}}"
+							]
+						},
+						"description": "Get a specific geological sample by its ID. Returns 200 OK with the sample, or 404 Not Found if the sample doesn't exist."
+					},
+					"response": []
+				},
+				{
+					"name": "Update Sample",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"sampleIdentifier\": \"GS-2024-001\",\n  \"sampleName\": \"Granite Sample (Updated)\",\n  \"sampleType\": \"ROCK\",\n  \"collectionDate\": \"2024-01-15\",\n  \"latitude\": 40.7128,\n  \"longitude\": -74.0060,\n  \"locationName\": \"Central Park - North Section\",\n  \"collectorName\": \"Dr. Jane Smith\",\n  \"description\": \"Fine-grained granite sample collected from outcrop. Updated description.\",\n  \"storageLocation\": \"Lab-A-Shelf-15\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/samples/{{sampleId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"samples",
+								"{{sampleId}}"
+							]
+						},
+						"description": "Update an existing geological sample. Returns 200 OK with the updated sample, or 404 Not Found if the sample doesn't exist."
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Sample",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/samples/{{sampleId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"samples",
+								"{{sampleId}}"
+							]
+						},
+						"description": "Delete a geological sample by its ID. Returns 204 No Content on success, or 404 Not Found if the sample doesn't exist."
+					},
+					"response": []
+				}
+			],
+			"description": "CRUD operations for geological samples"
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8080",
+			"type": "string"
+		},
+		{
+			"key": "sampleId",
+			"value": "550e8400-e29b-41d4-a716-446655440000",
+			"type": "string",
+			"description": "Sample ID (UUID format)"
+		}
+	]
+}
+
