@@ -1,0 +1,14 @@
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/repository/SampleRepository.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/dto/SampleRequest.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/dto/SampleResponse.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/config/DatabaseConfig.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/exception/GlobalExceptionHandler.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/config/CorsConfig.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/service/SampleService.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/model/GeologicalSample.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/controller/SampleController.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/config/WebConfig.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/controller/HealthCheckController.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/controller/RootController.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/exception/SampleNotFoundException.java
+/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/main/java/com/geoscience/sampleapi/GeologicalSampleApiApplication.java

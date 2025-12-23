@@ -1,0 +1,3 @@
+com/geoscience/sampleapi/controller/SampleControllerTest.class
+com/geoscience/sampleapi/controller/HealthCheckControllerTest.class
+com/geoscience/sampleapi/service/SampleServiceTest.class
