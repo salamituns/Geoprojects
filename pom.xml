@@ -88,12 +88,12 @@
         <repository>
             <id>nexus-releases</id>
             <name>Nexus Release Repository</name>
-            <url>${nexus.release.url}</url>
+            <url>http://10.2.0.11:8081/repository/maven-releases/</url>
         </repository>
         <snapshotRepository>
             <id>nexus-snapshots</id>
             <name>Nexus Snapshot Repository</name>
-            <url>${nexus.snapshot.url}</url>
+            <url>http://10.2.0.11:8081/repository/maven-snapshots/</url>
         </snapshotRepository>
     </distributionManagement>
     
