@@ -1,4 +1,4 @@
 -------------------------------------------------------------------------------
 Test set: com.geoscience.sampleapi.controller.HealthCheckControllerTest
 -------------------------------------------------------------------------------
-Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.136 s -- in com.geoscience.sampleapi.controller.HealthCheckControllerTest
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.219 s -- in com.geoscience.sampleapi.controller.HealthCheckControllerTest

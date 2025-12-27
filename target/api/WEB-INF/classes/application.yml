@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: geological-sample-api
+  
+  # Database configuration - reads from environment variables
+  # For Tomcat deployment, use absolute path or set DB_URL environment variable
+  # Default path: /opt/tomcat/data/samples.db (adjust based on your Tomcat installation)
+  datasource:
+    url: ${DB_URL:jdbc:sqlite:/opt/tomcat/data/samples.db}
+    driver-class-name: org.sqlite.JDBC
+  
+  # JPA/Hibernate configuration
+  jpa:
+    database-platform: org.hibernate.community.dialect.SQLiteDialect
+    hibernate:
+      ddl-auto: create  # Let Hibernate manage schema for SQLite
+    show-sql: ${SHOW_SQL:false}
+    properties:
+      hibernate:
+        format_sql: true
+        use_sql_comments: true
+        jdbc:
+          lob:
+            non_contextual_creation: true
+  
+  # Flyway configuration - disabled for SQLite (Hibernate manages schema)
+  flyway:
+    enabled: false
+
+# Server configuration
+server:
+  port: ${SERVER_PORT:8080}
+
+# Actuator configuration for health check
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+# Logging configuration - reads from environment variable
+logging:
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.geoscience.sampleapi: ${LOG_LEVEL:INFO}
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %level [%logger{36}] - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} - %level [%logger{36}] - %msg%n"
+

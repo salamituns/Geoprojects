@@ -1,3 +1,3 @@
-/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/test/java/com/geoscience/sampleapi/controller/HealthCheckControllerTest.java
-/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/test/java/com/geoscience/sampleapi/controller/SampleControllerTest.java
-/Users/olatunde/Github/Homelab/projects/geological-sample-api/src/test/java/com/geoscience/sampleapi/service/SampleServiceTest.java
+/Users/olatunde/Github/Geoprojects/src/test/java/com/geoscience/sampleapi/controller/HealthCheckControllerTest.java
+/Users/olatunde/Github/Geoprojects/src/test/java/com/geoscience/sampleapi/service/SampleServiceTest.java
+/Users/olatunde/Github/Geoprojects/src/test/java/com/geoscience/sampleapi/controller/SampleControllerTest.java
