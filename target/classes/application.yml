@@ -3,8 +3,10 @@ spring:
     name: geological-sample-api
   
   # Database configuration - reads from environment variables
+  # For Tomcat deployment, use absolute path or set DB_URL environment variable
+  # Default path: /opt/tomcat/data/samples.db (adjust based on your Tomcat installation)
   datasource:
-    url: ${DB_URL:jdbc:sqlite:./data/samples.db}
+    url: ${DB_URL:jdbc:sqlite:/opt/tomcat/data/samples.db}
     driver-class-name: org.sqlite.JDBC
   
   # JPA/Hibernate configuration
