@@ -11,10 +11,12 @@ help:
 	@echo "  make docker-build - Build Docker image (for future milestone)"
 
 # Build the project
+# Set BASE_PATH environment variable to configure frontend base path for deployment
+# Example: BASE_PATH=/geological-sample-api/ make build
 build:
 	@echo "Building the project..."
-	@echo "Building frontend..."
-	@cd frontend && npm install && npm run build
+	@echo "Building frontend with base path: ${BASE_PATH:-/}"
+	@cd frontend && npm install && VITE_BASE_PATH="${BASE_PATH:-/}" npm run build
 	@echo "Copying frontend build to static resources..."
 	@mkdir -p src/main/resources/static
 	@cp -r frontend/dist/* src/main/resources/static/

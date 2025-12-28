@@ -1,8 +1,26 @@
 import axios from 'axios';
 import type { SampleRequest, SampleResponse, PageResponse } from '../types/sample';
 
-// Use relative path when served from same origin, otherwise use environment variable or default
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? '' : 'http://localhost:8080');
+// Use base URL from Vite (includes context path for deployment)
+// In production when served from same origin: use base path from Vite
+// In development: use full URL to backend
+const getApiBaseUrl = () => {
+  // If explicitly set via environment variable, use it
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL;
+  }
+  
+  // In production, use the base path (context path) from Vite
+  // This ensures API calls work when deployed to a subpath like /geological-sample-api/
+  if (import.meta.env.PROD) {
+    return import.meta.env.BASE_URL || '';
+  }
+  
+  // In development, use full URL to backend
+  return 'http://localhost:8080';
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
