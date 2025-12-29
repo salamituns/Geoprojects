@@ -1,0 +1,194 @@
+pipeline {
+    agent any
+    
+    tools {
+        jdk 'JDK-17'
+        maven 'maven3.9.2'
+    }
+    
+    environment {
+        SONAR_TOKEN = credentials('sonarqube-token')
+        TOMCAT_URL = 'http://10.2.0.6:8177'
+        TOMCAT_MANAGER_URL = 'http://10.2.0.6:8177/manager/text'
+        BASE_PATH = '/geological-sample-api/'
+    }
+    
+    stages {
+        stage('1. Clone code') {
+            steps {
+                git branch: 'main', 
+                     credentialsId: 'salamitunsjenkins', 
+                     url: 'https://github.com/salamituns/Geoprojects'
+            }
+        }
+
+        stage('2. Build Frontend') {
+            steps {
+                script {
+                    echo "Building frontend with BASE_PATH=${BASE_PATH}"
+                    sh '''
+                      set -e
+                      NODE_VERSION=v20.11.1
+                      ARCH=$(uname -m)
+                      case "$ARCH" in
+                        x86_64) NODE_ARCH=x64 ;;
+                        aarch64) NODE_ARCH=arm64 ;;
+                        *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+                      esac
+            
+                      # Download portable Node.js
+                      curl -fsSL https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz -o node.tar.xz
+                      mkdir -p .node
+                      tar -xJf node.tar.xz -C .node --strip-components=1
+            
+                      export PATH="$PWD/.node/bin:$PATH"
+                      node -v
+                      npm -v
+            
+                      # Build frontend
+                      cd frontend
+                      npm ci
+                      BASE_PATH=/geological-sample-api/ npm run build
+                      cd ..
+            
+                      mkdir -p src/main/resources/static
+                      cp -r frontend/dist/* src/main/resources/static/
+                      echo "Frontend build completed and copied to static resources"
+                    '''
+                }
+            }
+        }
+
+        stage('3. Test+Build') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+        
+        stage('4. CodeQualityAnalysis') {
+            steps {
+                sh '''
+                    mvn sonar:sonar \
+                        -Dsonar.projectKey=geological-sample-api \
+                        -Dsonar.host.url=http://10.2.0.7:9000 \
+                        -Dsonar.token=${SONAR_TOKEN} \
+                        -Dsonar.sources=src/main/java
+                '''
+            }
+        }
+        
+        stage('5. ArtifactUpload') {
+            steps {
+                // Use managed Maven settings
+                configFileProvider([configFile(fileId: 'maven-nexus-settings', variable: 'MAVEN_SETTINGS')]) {
+                    sh 'mvn -s $MAVEN_SETTINGS deploy'
+                }
+            }
+        }
+        
+        stage('6. Approval') {
+            steps {
+                script {
+                    echo 'App ready for review'
+                    timeout(time: 5, unit: 'HOURS') {
+                        input message: 'Application is ready for deployment, please review and approve'
+                    }
+                }
+            }
+        }
+        
+        stage('7. Deploy to Tomcat') {
+            steps {
+                script {
+                    // Find WAR file dynamically
+                    def warFile = sh(
+                        script: 'find target -name "*.war" -type f | grep -v "original" | head -1',
+                        returnStdout: true
+                    ).trim()
+                    
+                    if (!warFile) {
+                        error "No WAR file found in target directory. Build may have failed."
+                    }
+                    
+                    echo "Found WAR file: ${warFile}"
+                    
+                    def pom = readMavenPom file: 'pom.xml'
+                    def appName = pom.artifactId
+                    
+                    echo "Deploying ${warFile} to Tomcat as /${appName}..."
+                    
+                    withCredentials([usernamePassword(credentialsId: 'tomcat-credentials', usernameVariable: 'TOMCAT_USER', passwordVariable: 'TOMCAT_PASS')]) {
+                        // Stop and undeploy
+                        sh """
+                            curl -s -u \${TOMCAT_USER}:\${TOMCAT_PASS} \
+                                "${TOMCAT_MANAGER_URL}/stop?path=/${appName}" || echo "Stop: App not running"
+                            curl -s -u \${TOMCAT_USER}:\${TOMCAT_PASS} \
+                                "${TOMCAT_MANAGER_URL}/undeploy?path=/${appName}" || echo "Undeploy: Nothing to remove"
+                        """
+                        
+                        sleep(time: 3, unit: 'SECONDS')
+                        
+                        // Deploy WAR
+                        sh """
+                            curl -s -u \${TOMCAT_USER}:\${TOMCAT_PASS} \
+                                --upload-file ${warFile} \
+                                "${TOMCAT_MANAGER_URL}/deploy?path=/${appName}&update=true"
+                        """
+                        
+                        // Wait longer for Spring Boot to start
+                        echo "Waiting for application to start (this may take 30-60 seconds)..."
+                        sleep(time: 15, unit: 'SECONDS')
+                        
+                        // Check deployment status multiple times
+                        def maxAttempts = 6
+                        def attempt = 0
+                        def deployed = false
+                        
+                        while (attempt < maxAttempts && !deployed) {
+                            attempt++
+                            echo "Checking deployment status (attempt ${attempt}/${maxAttempts})..."
+                            
+                            def status = sh(
+                                script: """
+                                    curl -s -u \${TOMCAT_USER}:\${TOMCAT_PASS} "${TOMCAT_MANAGER_URL}/list" | grep "/${appName}" || echo "not-found"
+                                """,
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (status.contains("running")) {
+                                deployed = true
+                                echo "SUCCESS: Application is running"
+                                echo "Status: ${status}"
+                            } else {
+                                echo "Application not running yet, waiting 10 more seconds..."
+                                sleep(time: 10, unit: 'SECONDS')
+                            }
+                        }
+                        
+                        if (!deployed) {
+                            echo "WARNING: Application may not have started yet. Checking Tomcat logs..."
+                            echo "Please check Tomcat logs manually for startup errors."
+                            echo "Application URL: ${TOMCAT_URL}/${appName}"
+                            echo "Health check URL: ${TOMCAT_URL}/${appName}/healthcheck"
+                        } else {
+                            // Test the health endpoint
+                            echo "Testing health endpoint..."
+                            sh """
+                                curl -s "${TOMCAT_URL}/${appName}/healthcheck" || echo "Health check failed"
+                            """
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "Pipeline succeeded! Application available at ${TOMCAT_URL}/geological-sample-api"
+        }
+        failure {
+            echo 'Pipeline failed! Check logs for details.'
+        }
+    }
+}
