@@ -7,6 +7,7 @@ A production-ready REST API for managing geological samples collected during fie
 - [Features](#features)
 - [Prerequisites](#prerequisites)
 - [Local Setup](#local-setup)
+- [Docker Deployment](#docker-deployment)
 - [Configuration](#configuration)
 - [Running the Application](#running-the-application)
 - [API Documentation](#api-documentation)
@@ -33,6 +34,7 @@ A production-ready REST API for managing geological samples collected during fie
 - **Java 17+** - Required for running the application
 - **Maven 3.6+** - Required for building and dependency management
 - **Make** (optional) - For using Makefile commands
+- **Docker** (optional) - For containerized deployment (Docker 20.10+ and Docker Compose 2.0+)
 
 ## Local Setup
 
@@ -87,6 +89,256 @@ mvn spring-boot:run
 ```
 
 The API will be available at `http://localhost:8080` (or the port specified in `SERVER_PORT`).
+
+## Docker Deployment
+
+The application can be containerized and deployed using Docker. The project includes a multi-stage Dockerfile that builds both the frontend and backend, and a `docker-compose.yml` file for easy deployment.
+
+### Prerequisites
+
+- **Docker 20.10+** - Container runtime
+- **Docker Compose 2.0+** (optional) - For simplified container orchestration
+
+### Quick Start with Docker Compose
+
+The easiest way to run the application in Docker:
+
+```bash
+# Build and start the container
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop the container
+docker-compose down
+```
+
+The application will be available at:
+- **Frontend**: `http://localhost:8080/`
+- **Health Check**: `http://localhost:8080/healthcheck`
+- **API**: `http://localhost:8080/api/v1/samples`
+
+### Building Docker Image
+
+#### Standard Build (Root Context Path)
+
+```bash
+# Build the Docker image
+docker build -t geological-sample-api:latest .
+
+# Run the container
+docker run -d \
+  --name geological-sample-api \
+  -p 8080:8080 \
+  -v $(pwd)/data:/app/data \
+  -e DB_URL=jdbc:sqlite:/app/data/samples.db \
+  geological-sample-api:latest
+```
+
+#### Build with Custom Base Path
+
+If deploying with a context path (e.g., `/geological-sample-api/`):
+
+```bash
+# Build with custom base path
+docker build \
+  --build-arg BASE_PATH=/geological-sample-api/ \
+  -t geological-sample-api:latest .
+
+# Run the container
+docker run -d \
+  --name geological-sample-api \
+  -p 8080:8080 \
+  -v $(pwd)/data:/app/data \
+  -e DB_URL=jdbc:sqlite:/app/data/samples.db \
+  geological-sample-api:latest
+```
+
+### Docker Compose Configuration
+
+The `docker-compose.yml` file provides a convenient way to manage the containerized application:
+
+```yaml
+services:
+  geological-sample-api:
+    build:
+      context: .
+      args:
+        BASE_PATH: /  # Change to /geological-sample-api/ if needed
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_URL=jdbc:sqlite:/app/data/samples.db
+      - SERVER_PORT=8080
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./data:/app/data  # Persists database data
+```
+
+#### Customizing Docker Compose
+
+You can customize the deployment by modifying `docker-compose.yml`:
+
+```bash
+# Override base path during build
+BASE_PATH=/geological-sample-api/ docker-compose up -d
+
+# Use different port
+docker-compose up -d --build
+# Then modify ports in docker-compose.yml: "9090:8080"
+```
+
+### Environment Variables
+
+The following environment variables can be configured when running the container:
+
+| Variable | Description | Default Value |
+|----------|-------------|---------------|
+| `DB_URL` | SQLite database file path | `jdbc:sqlite:/app/data/samples.db` |
+| `SERVER_PORT` | Server port (internal) | `8080` |
+| `LOG_LEVEL` | Logging level (DEBUG, INFO, WARN, ERROR) | `INFO` |
+| `CATALINA_OPTS` | Tomcat JVM options | `-Xmx512m -Xms256m` |
+
+### Volume Mounts
+
+The Docker setup uses volume mounts to persist data:
+
+- **Database**: `./data:/app/data` - Persists SQLite database file
+- **Logs**: Logs are written to stdout/stderr (use `docker logs` to view)
+
+### Health Checks
+
+The Docker image includes a health check that verifies the application is running:
+
+```bash
+# Check container health status
+docker ps
+
+# View health check logs
+docker inspect geological-sample-api | grep -A 10 Health
+```
+
+The health check endpoint is available at `/healthcheck` and runs every 30 seconds.
+
+### Docker Image Details
+
+The Dockerfile uses a multi-stage build process:
+
+1. **Frontend Builder**: Builds the React frontend with Node.js
+2. **Backend Builder**: Builds the Spring Boot WAR with Maven
+3. **Runtime**: Tomcat 10.1 with JDK 17 for running the application
+
+This approach results in a smaller final image by excluding build tools from the runtime image.
+
+### Troubleshooting Docker Deployment
+
+#### Container Won't Start
+
+```bash
+# Check container logs
+docker logs geological-sample-api
+
+# Check if port is already in use
+lsof -i :8080
+
+# Verify Docker is running
+docker ps
+```
+
+#### Database Permission Issues
+
+```bash
+# Ensure data directory has correct permissions
+mkdir -p ./data
+chmod 755 ./data
+
+# Check container file permissions
+docker exec geological-sample-api ls -la /app/data
+```
+
+#### Frontend Not Loading
+
+If the frontend shows a blank screen:
+
+1. **Check build base path**: Ensure `BASE_PATH` matches your deployment context
+2. **Rebuild with correct path**: 
+   ```bash
+   docker build --build-arg BASE_PATH=/your-context-path/ -t geological-sample-api:latest .
+   ```
+3. **Check browser console**: Look for 404 errors on asset files
+
+#### API Calls Fail
+
+If API calls return 404:
+
+1. **Verify context path**: Check if API is at `/api/v1/samples` or `/your-context-path/api/v1/samples`
+2. **Check CORS configuration**: Ensure frontend base path matches API context
+3. **View application logs**: `docker logs geological-sample-api`
+
+### Production Considerations
+
+For production deployments, consider:
+
+1. **Use specific image tags**: Avoid `latest` tag in production
+   ```bash
+   docker build -t geological-sample-api:v1.0.0 .
+   ```
+
+2. **Resource limits**: Set memory and CPU limits
+   ```yaml
+   deploy:
+     resources:
+       limits:
+         cpus: '1'
+         memory: 1G
+   ```
+
+3. **Health checks**: The image includes health checks, but you can customize them
+   ```yaml
+   healthcheck:
+     test: ["CMD", "curl", "-f", "http://localhost:8080/healthcheck"]
+     interval: 30s
+     timeout: 3s
+     retries: 3
+   ```
+
+4. **Database backups**: Regularly backup the SQLite database file from `./data/samples.db`
+
+5. **Log management**: Configure log rotation and aggregation
+   ```bash
+   docker run --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 ...
+   ```
+
+### Docker Commands Reference
+
+```bash
+# Build image
+docker build -t geological-sample-api:latest .
+
+# Run container
+docker run -d -p 8080:8080 -v $(pwd)/data:/app/data geological-sample-api:latest
+
+# View logs
+docker logs -f geological-sample-api
+
+# Stop container
+docker stop geological-sample-api
+
+# Remove container
+docker rm geological-sample-api
+
+# Remove image
+docker rmi geological-sample-api:latest
+
+# Execute commands in container
+docker exec -it geological-sample-api bash
+
+# View container stats
+docker stats geological-sample-api
+```
+
+For more details on Tomcat deployment, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Configuration
 
@@ -426,7 +678,11 @@ geological-sample-api/
 │   └── README.md
 ├── pom.xml
 ├── Makefile
+├── Dockerfile
+├── docker-compose.yml
+├── .dockerignore
 ├── README.md
+├── DEPLOYMENT.md
 ├── .gitignore
 └── postman/
     └── Geological_Sample_API.postman_collection.json
@@ -478,9 +734,8 @@ This application adheres to the [Twelve-Factor App](https://12factor.net/) metho
 
 ## Next Steps
 
-This is Part 1 of the journey. Future milestones include:
+This project includes Docker containerization. Future milestones include:
 
-- **Part 2**: Docker containerization
 - **Part 3**: CI/CD pipeline setup
 - **Part 4**: Production deployment
 - **Part 5**: Observability (metrics, tracing, monitoring)
