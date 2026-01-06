@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: geological-sample-api
+  namespace: geological-sample-api
+  labels:
+    app: geological-sample-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: geological-sample-api
+  template:
+    metadata:
+      labels:
+        app: geological-sample-api
+    spec:
+      containers:
+      - name: geological-sample-api
+        image: 10.2.0.11:8085/geological-sample-api:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        - name: DB_URL
+          value: "jdbc:sqlite:/app/data/samples.db"
+        - name: SERVER_PORT
+          value: "8080"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: CATALINA_OPTS
+          value: "-Xmx512m -Xms256m"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /healthcheck
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /healthcheck
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: data-volume
+          mountPath: /app/data
+      volumes:
+      - name: data-volume
+        emptyDir: {}
+      imagePullSecrets:
+      - name: nexus-docker-registry-secret

@@ -11,6 +11,10 @@ pipeline {
         TOMCAT_URL = 'http://10.2.0.6:8177'
         TOMCAT_MANAGER_URL = 'http://10.2.0.6:8177/manager/text'
         BASE_PATH = '/geological-sample-api/'
+        NEXUS_DOCKER_REGISTRY = '10.2.0.11:8085'
+        IMAGE_NAME = 'geological-sample-api'
+        KUBERNETES_NAMESPACE = 'geological-sample-api'
+        KUBERNETES_MASTER = '10.2.0.15'
     }
     
     stages {
@@ -77,7 +81,116 @@ pipeline {
             }
         }
         
-        stage('5. ArtifactUpload') {
+        stage('5. Docker Login') {
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'nexus-docker-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        sh """
+                            echo 'Logging into Nexus Docker registry (HTTP)...'
+                            
+                            # Check Docker daemon configuration
+                            if [ -f /etc/docker/daemon.json ]; then
+                                if grep -q "${NEXUS_DOCKER_REGISTRY}" /etc/docker/daemon.json 2>/dev/null; then
+                                    echo "✓ Registry ${NEXUS_DOCKER_REGISTRY} found in daemon.json"
+                                    echo "⚠ WARNING: If login fails, Docker daemon may need to be restarted"
+                                    echo "  Run: sudo systemctl restart docker"
+                                else
+                                    echo "✗ Registry ${NEXUS_DOCKER_REGISTRY} NOT found in daemon.json"
+                                    echo "Current daemon.json:"
+                                    cat /etc/docker/daemon.json || true
+                                fi
+                            else
+                                echo "✗ /etc/docker/daemon.json does not exist"
+                            fi
+                            
+                            # Check Docker info for insecure registries
+                            echo ""
+                            echo "Checking Docker daemon insecure registries configuration..."
+                            docker info 2>/dev/null | grep -i "insecure registries" || echo "Could not retrieve insecure registries from docker info"
+                            
+                            # Attempt login
+                            echo ""
+                            echo "Attempting Docker login..."
+                            if echo \${DOCKER_PASS} | docker login ${NEXUS_DOCKER_REGISTRY} -u \${DOCKER_USER} --password-stdin 2>&1; then
+                                echo "✓ Successfully logged into Docker registry"
+                            else
+                                echo ""
+                                echo "=========================================="
+                                echo "ERROR: Docker login failed!"
+                                echo "=========================================="
+                                echo ""
+                                echo "The error indicates Docker is trying HTTPS but the registry uses HTTP."
+                                echo ""
+                                echo "SOLUTION: Configure and restart Docker daemon"
+                                echo ""
+                                echo "1. Edit /etc/docker/daemon.json (or create it):"
+                                echo "   sudo nano /etc/docker/daemon.json"
+                                echo ""
+                                echo "2. Add/update the insecure-registries array:"
+                                echo "   {"
+                                echo "     \\\"insecure-registries\\\": [\\\"${NEXUS_DOCKER_REGISTRY}\\\"]"
+                                echo "   }"
+                                echo ""
+                                echo "3. Restart Docker daemon (REQUIRED for changes to take effect):"
+                                echo "   sudo systemctl restart docker"
+                                echo ""
+                                echo "4. Verify configuration:"
+                                echo "   docker info | grep -i insecure"
+                                echo ""
+                                echo "NOTE: If using Docker-in-Docker, configure the HOST Docker daemon."
+                                echo "=========================================="
+                                exit 1
+                            fi
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('6. Docker Build') {
+            steps {
+                script {
+                    def pom = readMavenPom file: 'pom.xml'
+                    def version = pom.version
+                    def imageTag = "${NEXUS_DOCKER_REGISTRY}/${IMAGE_NAME}:${version}-${BUILD_NUMBER}"
+                    def imageTagLatest = "${NEXUS_DOCKER_REGISTRY}/${IMAGE_NAME}:latest"
+                    
+                    echo "Building Docker image with tags: ${imageTag} and ${imageTagLatest}"
+                    
+                    sh """
+                        docker build \
+                            --build-arg BASE_PATH=${BASE_PATH} \
+                            -t ${imageTag} \
+                            -t ${imageTagLatest} \
+                            .
+                    """
+                    
+                    echo "Docker image built successfully: ${imageTag}"
+                }
+            }
+        }
+        
+        stage('7. Docker Push') {
+            steps {
+                script {
+                    def pom = readMavenPom file: 'pom.xml'
+                    def version = pom.version
+                    def imageTag = "${NEXUS_DOCKER_REGISTRY}/${IMAGE_NAME}:${version}-${BUILD_NUMBER}"
+                    def imageTagLatest = "${NEXUS_DOCKER_REGISTRY}/${IMAGE_NAME}:latest"
+                    
+                    echo "Pushing Docker images to Nexus..."
+                    
+                    sh """
+                        docker push ${imageTag} || exit 1
+                        docker push ${imageTagLatest} || exit 1
+                    """
+                    
+                    echo "Docker images pushed successfully: ${imageTag} and ${imageTagLatest}"
+                }
+            }
+        }
+        
+        stage('8. ArtifactUpload') {
             steps {
                 // Use managed Maven settings
                 configFileProvider([configFile(fileId: 'maven-nexus-settings', variable: 'MAVEN_SETTINGS')]) {
@@ -86,7 +199,7 @@ pipeline {
             }
         }
         
-        stage('6. Approval') {
+        stage('9. Approval') {
             steps {
                 script {
                     echo 'App ready for review'
@@ -97,7 +210,146 @@ pipeline {
             }
         }
         
-        stage('7. Deploy to Tomcat') {
+        stage('10. Deploy to Kubernetes') {
+            steps {
+                script {
+                    def pom = readMavenPom file: 'pom.xml'
+                    def version = pom.version
+                    def imageTag = "${NEXUS_DOCKER_REGISTRY}/${IMAGE_NAME}:${version}-${BUILD_NUMBER}"
+                    
+                    echo "=========================================="
+                    echo "Deploying to Kubernetes Cluster"
+                    echo "=========================================="
+                    echo "Image: ${imageTag}"
+                    echo "Namespace: ${KUBERNETES_NAMESPACE}"
+                    echo "Cluster Master: ${KUBERNETES_MASTER}"
+                    echo ""
+                    
+                    // Verify kubectl is available
+                    sh '''
+                        if ! command -v kubectl &> /dev/null; then
+                            echo "ERROR: kubectl not found. Installing kubectl..."
+                            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                            chmod +x kubectl
+                            sudo mv kubectl /usr/local/bin/
+                        fi
+                        kubectl version --client
+                    '''
+                    
+                    // Check cluster connectivity
+                    sh """
+                        echo "Checking Kubernetes cluster connectivity..."
+                        kubectl cluster-info || echo "WARNING: Cannot connect to cluster. Verify kubeconfig."
+                        kubectl get nodes
+                    """
+                    
+                    // Create namespace if it doesn't exist
+                    sh """
+                        echo "Ensuring namespace exists..."
+                        kubectl get namespace ${KUBERNETES_NAMESPACE} || kubectl create namespace ${KUBERNETES_NAMESPACE}
+                    """
+                    
+                    // Create/update image pull secret
+                    withCredentials([usernamePassword(credentialsId: 'nexus-docker-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        sh """
+                            echo "Creating/updating image pull secret..."
+                            kubectl create secret docker-registry nexus-docker-registry-secret \
+                                --docker-server=${NEXUS_DOCKER_REGISTRY} \
+                                --docker-username=\${DOCKER_USER} \
+                                --docker-password=\${DOCKER_PASS} \
+                                --namespace=${KUBERNETES_NAMESPACE} \
+                                --dry-run=client -o yaml | kubectl apply -f -
+                        """
+                    }
+                    
+                    // Update deployment manifest with new image tag
+                    sh """
+                        echo "Updating deployment with image: ${imageTag}"
+                        # Create temporary deployment file with updated image
+                        sed 's|image:.*geological-sample-api.*|image: ${imageTag}|g' k8s/deployment.yaml > k8s/deployment-${BUILD_NUMBER}.yaml
+                    """
+                    
+                    // Apply Kubernetes manifests
+                    sh """
+                        echo "Applying Kubernetes manifests..."
+                        kubectl apply -f k8s/namespace.yaml
+                        kubectl apply -f k8s/deployment-${BUILD_NUMBER}.yaml
+                        kubectl apply -f k8s/service.yaml
+                    """
+                    
+                    // Wait for deployment rollout
+                    sh """
+                        echo "Waiting for deployment rollout..."
+                        kubectl rollout status deployment/geological-sample-api \
+                            -n ${KUBERNETES_NAMESPACE} \
+                            --timeout=300s
+                    """
+                    
+                    // Verify deployment
+                    sh """
+                        echo ""
+                        echo "=========================================="
+                        echo "Deployment Verification"
+                        echo "=========================================="
+                        echo ""
+                        echo "=== Pods Status ==="
+                        kubectl get pods -n ${KUBERNETES_NAMESPACE} -l app=geological-sample-api
+                        echo ""
+                        echo "=== Service Status ==="
+                        kubectl get svc -n ${KUBERNETES_NAMESPACE}
+                        echo ""
+                        echo "=== Deployment Status ==="
+                        kubectl get deployment -n ${KUBERNETES_NAMESPACE}
+                    """
+                    
+                    // Get service details
+                    def nodePort = sh(
+                        script: "kubectl get svc geological-sample-api -n ${KUBERNETES_NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo '30080'",
+                        returnStdout: true
+                    ).trim()
+                    
+                    def workerNodes = sh(
+                        script: "kubectl get nodes -o jsonpath='{.items[?(@.metadata.labels.kubernetes\\.io/role==\"node\")].status.addresses[?(@.type==\"InternalIP\")].address}'",
+                        returnStdout: true
+                    ).trim()
+                    
+                    def workerIPs = workerNodes.split('\\s+')
+                    def primaryWorkerIP = workerIPs.length > 0 ? workerIPs[0] : '10.2.0.14'
+                    
+                    echo ""
+                    echo "=========================================="
+                    echo "SUCCESS: Application Deployed to Kubernetes"
+                    echo "=========================================="
+                    echo "Image Tag: ${imageTag}"
+                    echo "Namespace: ${KUBERNETES_NAMESPACE}"
+                    echo ""
+                    echo "Access URLs:"
+                    echo "  Worker Node 1: http://${primaryWorkerIP}:${nodePort}"
+                    if (workerIPs.length > 1) {
+                        echo "  Worker Node 2: http://${workerIPs[1]}:${nodePort}"
+                    }
+                    echo ""
+                    echo "Health Check:"
+                    echo "  http://${primaryWorkerIP}:${nodePort}/healthcheck"
+                    echo "=========================================="
+                    
+                    // Test health endpoint
+                    sh """
+                        echo "Testing health endpoint..."
+                        sleep 10
+                        curl -s http://${primaryWorkerIP}:${nodePort}/healthcheck || echo "Health check not yet available (application may still be starting)"
+                    """
+                    
+                    // Cleanup temporary file
+                    sh "rm -f k8s/deployment-${BUILD_NUMBER}.yaml || true"
+                }
+            }
+        }
+        
+        stage('11. Deploy to Tomcat') {
+            when {
+                expression { return false }  // Disabled by default, set to true if needed
+            }
             steps {
                 script {
                     // Find WAR file dynamically
@@ -185,10 +437,35 @@ pipeline {
     
     post {
         success {
-            echo "Pipeline succeeded! Application available at ${TOMCAT_URL}/geological-sample-api"
+            script {
+                def nodePort = sh(
+                    script: "kubectl get svc geological-sample-api -n ${KUBERNETES_NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo '30080'",
+                    returnStdout: true
+                ).trim()
+                def workerIPs = sh(
+                    script: "kubectl get nodes -o jsonpath='{.items[?(@.metadata.labels.kubernetes\\.io/role==\"node\")].status.addresses[?(@.type==\"InternalIP\")].address}'",
+                    returnStdout: true
+                ).trim().split('\\s+')
+                def primaryWorkerIP = workerIPs.length > 0 ? workerIPs[0] : '10.2.0.14'
+                
+                echo "=========================================="
+                echo "Pipeline Succeeded!"
+                echo "=========================================="
+                echo "Application deployed to Kubernetes"
+                echo "Access URL: http://${primaryWorkerIP}:${nodePort}"
+                echo "Health Check: http://${primaryWorkerIP}:${nodePort}/healthcheck"
+                echo "=========================================="
+            }
         }
         failure {
             echo 'Pipeline failed! Check logs for details.'
+            script {
+                // Show Kubernetes pod logs on failure
+                sh """
+                    echo "=== Recent Pod Logs ==="
+                    kubectl logs -n ${KUBERNETES_NAMESPACE} -l app=geological-sample-api --tail=50 || echo "Could not retrieve logs"
+                """
+            }
         }
     }
 }
