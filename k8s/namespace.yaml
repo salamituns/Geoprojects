@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: geological-sample-api
+  labels:
+    name: geological-sample-api
+    environment: production
