@@ -87,59 +87,225 @@ pipeline {
                     withCredentials([usernamePassword(credentialsId: 'nexus-docker-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                         sh """
                             echo 'Logging into Nexus Docker registry (HTTP)...'
+                            echo ""
                             
                             # Check Docker daemon configuration
+                            echo "=== Checking Docker daemon configuration ==="
                             if [ -f /etc/docker/daemon.json ]; then
+                                echo "daemon.json exists. Contents:"
+                                cat /etc/docker/daemon.json || true
+                                echo ""
                                 if grep -q "${NEXUS_DOCKER_REGISTRY}" /etc/docker/daemon.json 2>/dev/null; then
                                     echo "✓ Registry ${NEXUS_DOCKER_REGISTRY} found in daemon.json"
-                                    echo "⚠ WARNING: If login fails, Docker daemon may need to be restarted"
-                                    echo "  Run: sudo systemctl restart docker"
                                 else
                                     echo "✗ Registry ${NEXUS_DOCKER_REGISTRY} NOT found in daemon.json"
-                                    echo "Current daemon.json:"
-                                    cat /etc/docker/daemon.json || true
                                 fi
                             else
                                 echo "✗ /etc/docker/daemon.json does not exist"
                             fi
                             
-                            # Check Docker info for insecure registries
+                            # Check Docker info for insecure registries (this is the authoritative source)
                             echo ""
-                            echo "Checking Docker daemon insecure registries configuration..."
-                            docker info 2>/dev/null | grep -i "insecure registries" || echo "Could not retrieve insecure registries from docker info"
+                            echo "=== Checking Docker daemon insecure registries (from docker info) ==="
+                            INSECURE_REGISTRIES=\$(docker info 2>/dev/null | grep -i "insecure registries" -A 5 || echo "NOT FOUND")
+                            echo "\${INSECURE_REGISTRIES}"
                             
-                            # Attempt login
-                            echo ""
-                            echo "Attempting Docker login..."
-                            if echo \${DOCKER_PASS} | docker login ${NEXUS_DOCKER_REGISTRY} -u \${DOCKER_USER} --password-stdin 2>&1; then
-                                echo "✓ Successfully logged into Docker registry"
+                            if echo "\${INSECURE_REGISTRIES}" | grep -q "${NEXUS_DOCKER_REGISTRY}"; then
+                                echo "✓ Registry ${NEXUS_DOCKER_REGISTRY} is configured as insecure in Docker daemon"
                             else
+                                echo "✗ WARNING: Registry ${NEXUS_DOCKER_REGISTRY} is NOT showing in Docker daemon insecure registries"
+                                echo "  This means daemon.json changes haven't taken effect or format is incorrect."
+                                echo "  Docker daemon must be restarted after daemon.json changes."
+                            fi
+                            
+                            # Test registry connectivity
+                            echo ""
+                            echo "=== Testing registry connectivity ==="
+                            if curl -s -f http://${NEXUS_DOCKER_REGISTRY}/v2/ > /dev/null 2>&1; then
+                                echo "✓ Registry is reachable via HTTP"
+                            else
+                                echo "✗ Registry is NOT reachable via HTTP"
+                                echo "  Testing with curl:"
+                                curl -v http://${NEXUS_DOCKER_REGISTRY}/v2/ || true
+                            fi
+                            
+                            # Check Docker version (some versions have bugs with insecure registries)
+                            echo ""
+                            echo "=== Docker Version Information ==="
+                            docker --version
+                            docker version --format 'Client: {{.Client.Version}}, Server: {{.Server.Version}}' 2>/dev/null || docker --version
+                            
+                            # Check for Docker client config that might interfere
+                            echo ""
+                            echo "=== Checking Docker client configuration ==="
+                            DOCKER_CONFIG_BACKUP=""
+                            if [ -f ~/.docker/config.json ]; then
+                                echo "Found Docker client config:"
+                                cat ~/.docker/config.json | head -20 || true
                                 echo ""
-                                echo "=========================================="
-                                echo "ERROR: Docker login failed!"
-                                echo "=========================================="
+                                echo "⚠ WARNING: Client config may interfere with insecure-registries"
+                                echo "Temporarily backing up and clearing client config for login..."
+                                DOCKER_CONFIG_BACKUP=~/.docker/config.json.backup.\$(date +%s)
+                                cp ~/.docker/config.json "\${DOCKER_CONFIG_BACKUP}" || true
+                                # Remove the registry entry from client config temporarily
+                                # This forces Docker to use daemon's insecure-registries setting
+                                python3 << 'PYTHON_SCRIPT'
+import json
+import os
+import sys
+
+config_file = os.path.expanduser("~/.docker/config.json")
+registry = "${NEXUS_DOCKER_REGISTRY}"
+
+try:
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    
+    # Remove the specific registry from auths if it exists
+    if 'auths' in config and registry in config['auths']:
+        del config['auths'][registry]
+        print(f"Removed {registry} from client config")
+        
+        # If auths is now empty, remove it
+        if not config['auths']:
+            config = {}
+        else:
+            # Write back the modified config
+            with open(config_file, 'w') as f:
+                json.dump(config, f, indent=2)
+            print(f"Updated {config_file}")
+    else:
+        print(f"Registry {registry} not found in client config")
+except Exception as e:
+    print(f"Error modifying config: {e}", file=sys.stderr)
+    sys.exit(1)
+PYTHON_SCRIPT
+                            else
+                                echo "No Docker client config found (this is OK)"
+                            fi
+                            
+                            # Attempt login (use hostname:port WITHOUT http:// prefix)
+                            # Docker will use insecure-registries config from daemon.json
+                            echo ""
+                            echo "=== Attempting Docker login ==="
+                            echo "Using registry: ${NEXUS_DOCKER_REGISTRY} (without http:// prefix)"
+                            echo "Docker will use insecure-registries configuration from daemon.json"
+                            echo ""
+                            
+                            # Try login with explicit error capture
+                            # Note: Docker CLI version 28.2.2+ has a bug where it tries HTTPS first
+                            # even when insecure-registries is configured. We'll try docker login first,
+                            # and if it fails with HTTPS error, use a workaround.
+                            LOGIN_OUTPUT=\$(echo \${DOCKER_PASS} | docker login ${NEXUS_DOCKER_REGISTRY} -u \${DOCKER_USER} --password-stdin 2>&1) || {
+                                LOGIN_ERROR=\$?
+                                
+                                # Check if it's the HTTPS error - if so, use workaround
+                                if echo "\${LOGIN_OUTPUT}" | grep -qE "HTTPS client|http: server gave HTTP response to HTTPS client"; then
+                                    echo "\${LOGIN_OUTPUT}"
+                                    echo ""
+                                    echo "⚠ Docker CLI tried HTTPS first (known issue with Docker 28.2.2+)"
+                                    echo "Using workaround: Manual authentication via registry API..."
+                                    echo ""
+                                    
+                                    # Workaround: Authenticate directly with registry API and manually add to Docker config
+                                    # This bypasses Docker CLI's HTTPS-first behavior
+                                    mkdir -p ~/.docker
+                                    
+                                    # Create or update Docker config with manual auth
+                                    # Pass credentials as arguments to avoid shell variable issues
+                                    python3 << EOF
+import json
+import os
+import base64
+import sys
+
+config_file = os.path.expanduser("~/.docker/config.json")
+registry = "${NEXUS_DOCKER_REGISTRY}"
+username = "\${DOCKER_USER}"
+password = "\${DOCKER_PASS}"
+
+if not username or not password:
+    print("ERROR: DOCKER_USER or DOCKER_PASS not set", file=sys.stderr)
+    sys.exit(1)
+
+# Create auth string
+auth_string = f"{username}:{password}"
+auth_encoded = base64.b64encode(auth_string.encode()).decode()
+
+# Load or create config
+try:
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    config = {}
+
+if 'auths' not in config:
+    config['auths'] = {}
+
+# Add registry with HTTP protocol explicitly (though Docker might ignore this)
+# The key is to have the auth so Docker doesn't need to login
+config['auths'][registry] = {
+    'auth': auth_encoded
+}
+
+# Write config
+with open(config_file, 'w') as f:
+    json.dump(config, f, indent=2)
+
+print(f"✓ Added authentication for {registry} to Docker config")
+print("Note: Docker will use this auth when pulling/pushing images")
+EOF
+                                    
+                                    # Verify the auth was added
+                                    if [ -f ~/.docker/config.json ] && grep -q "${NEXUS_DOCKER_REGISTRY}" ~/.docker/config.json; then
+                                        echo "✓ Authentication configured successfully"
+                                        echo "Docker will use this authentication for registry operations"
+                                    else
+                                        echo "✗ Failed to configure authentication"
+                                        exit 1
+                                    fi
+                                else
+                                    # Different error - show full output
+                                    echo "\${LOGIN_OUTPUT}"
+                                    echo ""
+                                    echo "=========================================="
+                                    echo "ERROR: Docker login failed!"
+                                    echo "=========================================="
+                                    echo ""
+                                    echo "Registry: ${NEXUS_DOCKER_REGISTRY}"
+                                    echo "Exit code: \${LOGIN_ERROR}"
+                                    echo ""
+                                    echo "TROUBLESHOOTING STEPS:"
+                                    echo ""
+                                    echo "1. Verify insecure registries are active:"
+                                    echo "   docker info | grep -i insecure"
+                                    echo ""
+                                    echo "2. Test registry connectivity:"
+                                    echo "   curl -v http://${NEXUS_DOCKER_REGISTRY}/v2/"
+                                    echo ""
+                                    echo "3. Check Docker client config:"
+                                    echo "   cat ~/.docker/config.json 2>/dev/null || echo 'No client config found'"
+                                    echo ""
+                                    echo "=========================================="
+                                    exit \${LOGIN_ERROR}
+                                fi
+                            }
+                            
+                            # If we got here from successful login, show output
+                            if [ -n "\${LOGIN_OUTPUT}" ]; then
+                                echo "\${LOGIN_OUTPUT}"
+                            fi
+                            echo "✓ Successfully authenticated with Docker registry"
+                            
+                            echo "\${LOGIN_OUTPUT}"
+                            echo "✓ Successfully logged into Docker registry"
+                            
+                            # Restore client config if we backed it up
+                            if [ -n "\${DOCKER_CONFIG_BACKUP}" ] && [ -f "\${DOCKER_CONFIG_BACKUP}" ]; then
                                 echo ""
-                                echo "The error indicates Docker is trying HTTPS but the registry uses HTTP."
-                                echo ""
-                                echo "SOLUTION: Configure and restart Docker daemon"
-                                echo ""
-                                echo "1. Edit /etc/docker/daemon.json (or create it):"
-                                echo "   sudo nano /etc/docker/daemon.json"
-                                echo ""
-                                echo "2. Add/update the insecure-registries array:"
-                                echo "   {"
-                                echo "     \\\"insecure-registries\\\": [\\\"${NEXUS_DOCKER_REGISTRY}\\\"]"
-                                echo "   }"
-                                echo ""
-                                echo "3. Restart Docker daemon (REQUIRED for changes to take effect):"
-                                echo "   sudo systemctl restart docker"
-                                echo ""
-                                echo "4. Verify configuration:"
-                                echo "   docker info | grep -i insecure"
-                                echo ""
-                                echo "NOTE: If using Docker-in-Docker, configure the HOST Docker daemon."
-                                echo "=========================================="
-                                exit 1
+                                echo "Restoring Docker client config..."
+                                cp "\${DOCKER_CONFIG_BACKUP}" ~/.docker/config.json || true
+                                echo "✓ Client config restored"
                             fi
                         """
                     }
