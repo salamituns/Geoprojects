@@ -8,10 +8,8 @@ pipeline {
     
     environment {
         SONAR_TOKEN = credentials('sonarqube-token')
-        TOMCAT_URL = 'http://10.2.0.6:8177'
-        TOMCAT_MANAGER_URL = 'http://10.2.0.6:8177/manager/text'
         BASE_PATH = '/geological-sample-api/'
-        NEXUS_DOCKER_REGISTRY = '10.2.0.11:8085'
+        DOCKER_HUB_REGISTRY = 'docker.io'
         IMAGE_NAME = 'geological-sample-api'
         KUBERNETES_NAMESPACE = 'geological-sample-api'
         KUBERNETES_MASTER = '10.2.0.15'
@@ -52,7 +50,7 @@ pipeline {
                       # Build frontend
                       cd frontend
                       npm ci
-                      BASE_PATH=/geological-sample-api/ npm run build
+                      VITE_BASE_PATH=/geological-sample-api/ npm run build
                       cd ..
             
                       mkdir -p src/main/resources/static
@@ -84,229 +82,45 @@ pipeline {
         stage('5. Docker Login') {
             steps {
                 script {
-                    withCredentials([usernamePassword(credentialsId: 'nexus-docker-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                         sh """
-                            echo 'Logging into Nexus Docker registry (HTTP)...'
+                            echo 'Logging into Docker Hub (HTTPS)...'
                             echo ""
                             
-                            # Check Docker daemon configuration
-                            echo "=== Checking Docker daemon configuration ==="
-                            if [ -f /etc/docker/daemon.json ]; then
-                                echo "daemon.json exists. Contents:"
-                                cat /etc/docker/daemon.json || true
-                                echo ""
-                                if grep -q "${NEXUS_DOCKER_REGISTRY}" /etc/docker/daemon.json 2>/dev/null; then
-                                    echo "✓ Registry ${NEXUS_DOCKER_REGISTRY} found in daemon.json"
-                                else
-                                    echo "✗ Registry ${NEXUS_DOCKER_REGISTRY} NOT found in daemon.json"
-                                fi
-                            else
-                                echo "✗ /etc/docker/daemon.json does not exist"
-                            fi
-                            
-                            # Check Docker info for insecure registries (this is the authoritative source)
-                            echo ""
-                            echo "=== Checking Docker daemon insecure registries (from docker info) ==="
-                            INSECURE_REGISTRIES=\$(docker info 2>/dev/null | grep -i "insecure registries" -A 5 || echo "NOT FOUND")
-                            echo "\${INSECURE_REGISTRIES}"
-                            
-                            if echo "\${INSECURE_REGISTRIES}" | grep -q "${NEXUS_DOCKER_REGISTRY}"; then
-                                echo "✓ Registry ${NEXUS_DOCKER_REGISTRY} is configured as insecure in Docker daemon"
-                            else
-                                echo "✗ WARNING: Registry ${NEXUS_DOCKER_REGISTRY} is NOT showing in Docker daemon insecure registries"
-                                echo "  This means daemon.json changes haven't taken effect or format is incorrect."
-                                echo "  Docker daemon must be restarted after daemon.json changes."
-                            fi
-                            
-                            # Test registry connectivity
-                            echo ""
-                            echo "=== Testing registry connectivity ==="
-                            if curl -s -f http://${NEXUS_DOCKER_REGISTRY}/v2/ > /dev/null 2>&1; then
-                                echo "✓ Registry is reachable via HTTP"
-                            else
-                                echo "✗ Registry is NOT reachable via HTTP"
-                                echo "  Testing with curl:"
-                                curl -v http://${NEXUS_DOCKER_REGISTRY}/v2/ || true
-                            fi
-                            
-                            # Check Docker version (some versions have bugs with insecure registries)
-                            echo ""
+                            # Check Docker version
                             echo "=== Docker Version Information ==="
                             docker --version
                             docker version --format 'Client: {{.Client.Version}}, Server: {{.Server.Version}}' 2>/dev/null || docker --version
-                            
-                            # Check for Docker client config that might interfere
-                            echo ""
-                            echo "=== Checking Docker client configuration ==="
-                            DOCKER_CONFIG_BACKUP=""
-                            if [ -f ~/.docker/config.json ]; then
-                                echo "Found Docker client config:"
-                                cat ~/.docker/config.json | head -20 || true
-                                echo ""
-                                echo "⚠ WARNING: Client config may interfere with insecure-registries"
-                                echo "Temporarily backing up and clearing client config for login..."
-                                DOCKER_CONFIG_BACKUP=~/.docker/config.json.backup.\$(date +%s)
-                                cp ~/.docker/config.json "\${DOCKER_CONFIG_BACKUP}" || true
-                                # Remove the registry entry from client config temporarily
-                                # This forces Docker to use daemon's insecure-registries setting
-                                python3 << 'PYTHON_SCRIPT'
-import json
-import os
-import sys
-
-config_file = os.path.expanduser("~/.docker/config.json")
-registry = "${NEXUS_DOCKER_REGISTRY}"
-
-try:
-    with open(config_file, 'r') as f:
-        config = json.load(f)
-    
-    # Remove the specific registry from auths if it exists
-    if 'auths' in config and registry in config['auths']:
-        del config['auths'][registry]
-        print(f"Removed {registry} from client config")
-        
-        # If auths is now empty, remove it
-        if not config['auths']:
-            config = {}
-        else:
-            # Write back the modified config
-            with open(config_file, 'w') as f:
-                json.dump(config, f, indent=2)
-            print(f"Updated {config_file}")
-    else:
-        print(f"Registry {registry} not found in client config")
-except Exception as e:
-    print(f"Error modifying config: {e}", file=sys.stderr)
-    sys.exit(1)
-PYTHON_SCRIPT
-                            else
-                                echo "No Docker client config found (this is OK)"
-                            fi
-                            
-                            # Attempt login (use hostname:port WITHOUT http:// prefix)
-                            # Docker will use insecure-registries config from daemon.json
-                            echo ""
-                            echo "=== Attempting Docker login ==="
-                            echo "Using registry: ${NEXUS_DOCKER_REGISTRY} (without http:// prefix)"
-                            echo "Docker will use insecure-registries configuration from daemon.json"
                             echo ""
                             
-                            # Try login with explicit error capture
-                            # Note: Docker CLI version 28.2.2+ has a bug where it tries HTTPS first
-                            # even when insecure-registries is configured. We'll try docker login first,
-                            # and if it fails with HTTPS error, use a workaround.
-                            LOGIN_OUTPUT=\$(echo \${DOCKER_PASS} | docker login ${NEXUS_DOCKER_REGISTRY} -u \${DOCKER_USER} --password-stdin 2>&1) || {
+                            # Login to Docker Hub (uses HTTPS by default)
+                            echo "=== Attempting Docker Hub login ==="
+                            echo "Registry: ${DOCKER_HUB_REGISTRY}"
+                            echo "Username: \${DOCKER_USER}"
+                            echo ""
+                            
+                            LOGIN_OUTPUT=\$(echo \${DOCKER_PASS} | docker login ${DOCKER_HUB_REGISTRY} -u \${DOCKER_USER} --password-stdin 2>&1) || {
                                 LOGIN_ERROR=\$?
-                                
-                                # Check if it's the HTTPS error - if so, use workaround
-                                if echo "\${LOGIN_OUTPUT}" | grep -qE "HTTPS client|http: server gave HTTP response to HTTPS client"; then
-                                    echo "\${LOGIN_OUTPUT}"
-                                    echo ""
-                                    echo "⚠ Docker CLI tried HTTPS first (known issue with Docker 28.2.2+)"
-                                    echo "Using workaround: Manual authentication via registry API..."
-                                    echo ""
-                                    
-                                    # Workaround: Authenticate directly with registry API and manually add to Docker config
-                                    # This bypasses Docker CLI's HTTPS-first behavior
-                                    mkdir -p ~/.docker
-                                    
-                                    # Create or update Docker config with manual auth
-                                    # Pass credentials as arguments to avoid shell variable issues
-                                    python3 << EOF
-import json
-import os
-import base64
-import sys
-
-config_file = os.path.expanduser("~/.docker/config.json")
-registry = "${NEXUS_DOCKER_REGISTRY}"
-username = "\${DOCKER_USER}"
-password = "\${DOCKER_PASS}"
-
-if not username or not password:
-    print("ERROR: DOCKER_USER or DOCKER_PASS not set", file=sys.stderr)
-    sys.exit(1)
-
-# Create auth string
-auth_string = f"{username}:{password}"
-auth_encoded = base64.b64encode(auth_string.encode()).decode()
-
-# Load or create config
-try:
-    with open(config_file, 'r') as f:
-        config = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    config = {}
-
-if 'auths' not in config:
-    config['auths'] = {}
-
-# Add registry with HTTP protocol explicitly (though Docker might ignore this)
-# The key is to have the auth so Docker doesn't need to login
-config['auths'][registry] = {
-    'auth': auth_encoded
-}
-
-# Write config
-with open(config_file, 'w') as f:
-    json.dump(config, f, indent=2)
-
-print(f"✓ Added authentication for {registry} to Docker config")
-print("Note: Docker will use this auth when pulling/pushing images")
-EOF
-                                    
-                                    # Verify the auth was added
-                                    if [ -f ~/.docker/config.json ] && grep -q "${NEXUS_DOCKER_REGISTRY}" ~/.docker/config.json; then
-                                        echo "✓ Authentication configured successfully"
-                                        echo "Docker will use this authentication for registry operations"
-                                    else
-                                        echo "✗ Failed to configure authentication"
-                                        exit 1
-                                    fi
-                                else
-                                    # Different error - show full output
-                                    echo "\${LOGIN_OUTPUT}"
-                                    echo ""
-                                    echo "=========================================="
-                                    echo "ERROR: Docker login failed!"
-                                    echo "=========================================="
-                                    echo ""
-                                    echo "Registry: ${NEXUS_DOCKER_REGISTRY}"
-                                    echo "Exit code: \${LOGIN_ERROR}"
-                                    echo ""
-                                    echo "TROUBLESHOOTING STEPS:"
-                                    echo ""
-                                    echo "1. Verify insecure registries are active:"
-                                    echo "   docker info | grep -i insecure"
-                                    echo ""
-                                    echo "2. Test registry connectivity:"
-                                    echo "   curl -v http://${NEXUS_DOCKER_REGISTRY}/v2/"
-                                    echo ""
-                                    echo "3. Check Docker client config:"
-                                    echo "   cat ~/.docker/config.json 2>/dev/null || echo 'No client config found'"
-                                    echo ""
-                                    echo "=========================================="
-                                    exit \${LOGIN_ERROR}
-                                fi
+                                echo "\${LOGIN_OUTPUT}"
+                                echo ""
+                                echo "=========================================="
+                                echo "ERROR: Docker Hub login failed!"
+                                echo "=========================================="
+                                echo ""
+                                echo "Exit code: \${LOGIN_ERROR}"
+                                echo ""
+                                echo "TROUBLESHOOTING STEPS:"
+                                echo ""
+                                echo "1. Verify Docker Hub credentials are correct"
+                                echo "2. Check network connectivity to Docker Hub"
+                                echo "3. Verify Docker Hub account has access"
+                                echo ""
+                                echo "=========================================="
+                                exit \${LOGIN_ERROR}
                             }
                             
-                            # If we got here from successful login, show output
-                            if [ -n "\${LOGIN_OUTPUT}" ]; then
-                                echo "\${LOGIN_OUTPUT}"
-                            fi
-                            echo "✓ Successfully authenticated with Docker registry"
-                            
                             echo "\${LOGIN_OUTPUT}"
-                            echo "✓ Successfully logged into Docker registry"
-                            
-                            # Restore client config if we backed it up
-                            if [ -n "\${DOCKER_CONFIG_BACKUP}" ] && [ -f "\${DOCKER_CONFIG_BACKUP}" ]; then
-                                echo ""
-                                echo "Restoring Docker client config..."
-                                cp "\${DOCKER_CONFIG_BACKUP}" ~/.docker/config.json || true
-                                echo "✓ Client config restored"
-                            fi
+                            echo "✓ Successfully logged into Docker Hub"
                         """
                     }
                 }
@@ -316,22 +130,51 @@ EOF
         stage('6. Docker Build') {
             steps {
                 script {
-                    def pom = readMavenPom file: 'pom.xml'
-                    def version = pom.version
-                    def imageTag = "${NEXUS_DOCKER_REGISTRY}/${IMAGE_NAME}:${version}-${BUILD_NUMBER}"
-                    def imageTagLatest = "${NEXUS_DOCKER_REGISTRY}/${IMAGE_NAME}:latest"
-                    
-                    echo "Building Docker image with tags: ${imageTag} and ${imageTagLatest}"
-                    
+                    // Check Docker permissions before building
                     sh """
-                        docker build \
-                            --build-arg BASE_PATH=${BASE_PATH} \
-                            -t ${imageTag} \
-                            -t ${imageTagLatest} \
-                            .
+                        echo "=== Checking Docker Access ==="
+                        if docker info > /dev/null 2>&1; then
+                            echo "✓ Docker daemon is accessible"
+                        else
+                            echo "✗ ERROR: Cannot access Docker daemon"
+                            echo ""
+                            echo "Current user: \$(whoami)"
+                            echo "Docker socket permissions:"
+                            ls -la /var/run/docker.sock 2>/dev/null || echo "Docker socket not found"
+                            echo ""
+                            echo "SOLUTION: Add Jenkins user to docker group"
+                            echo "  1. Run on Jenkins server:"
+                            echo "     sudo usermod -aG docker jenkins"
+                            echo "  2. Restart Jenkins service:"
+                            echo "     sudo systemctl restart jenkins"
+                            echo "  3. Or verify Jenkins user is in docker group:"
+                            echo "     groups jenkins"
+                            echo ""
+                            echo "If Jenkins runs in a container, configure Docker socket permissions."
+                            exit 1
+                        fi
+                        echo ""
                     """
                     
-                    echo "Docker image built successfully: ${imageTag}"
+                    def pom = readMavenPom file: 'pom.xml'
+                    def version = pom.version
+                    
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        def imageTag = "${DOCKER_USER}/${IMAGE_NAME}:${version}-${BUILD_NUMBER}"
+                        def imageTagLatest = "${DOCKER_USER}/${IMAGE_NAME}:latest"
+                        
+                        echo "Building Docker image with tags: ${imageTag} and ${imageTagLatest}"
+                        
+                        sh """
+                            docker build \
+                                --build-arg BASE_PATH=${BASE_PATH} \
+                                -t ${imageTag} \
+                                -t ${imageTagLatest} \
+                                .
+                        """
+                        
+                        echo "Docker image built successfully: ${imageTag}"
+                    }
                 }
             }
         }
@@ -341,17 +184,20 @@ EOF
                 script {
                     def pom = readMavenPom file: 'pom.xml'
                     def version = pom.version
-                    def imageTag = "${NEXUS_DOCKER_REGISTRY}/${IMAGE_NAME}:${version}-${BUILD_NUMBER}"
-                    def imageTagLatest = "${NEXUS_DOCKER_REGISTRY}/${IMAGE_NAME}:latest"
                     
-                    echo "Pushing Docker images to Nexus..."
-                    
-                    sh """
-                        docker push ${imageTag} || exit 1
-                        docker push ${imageTagLatest} || exit 1
-                    """
-                    
-                    echo "Docker images pushed successfully: ${imageTag} and ${imageTagLatest}"
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        def imageTag = "${DOCKER_USER}/${IMAGE_NAME}:${version}-${BUILD_NUMBER}"
+                        def imageTagLatest = "${DOCKER_USER}/${IMAGE_NAME}:latest"
+                        
+                        echo "Pushing Docker images to Docker Hub..."
+                        
+                        sh """
+                            docker push ${imageTag} || exit 1
+                            docker push ${imageTagLatest} || exit 1
+                        """
+                        
+                        echo "Docker images pushed successfully: ${imageTag} and ${imageTagLatest}"
+                    }
                 }
             }
         }
@@ -381,235 +227,210 @@ EOF
                 script {
                     def pom = readMavenPom file: 'pom.xml'
                     def version = pom.version
-                    def imageTag = "${NEXUS_DOCKER_REGISTRY}/${IMAGE_NAME}:${version}-${BUILD_NUMBER}"
                     
-                    echo "=========================================="
-                    echo "Deploying to Kubernetes Cluster"
-                    echo "=========================================="
-                    echo "Image: ${imageTag}"
-                    echo "Namespace: ${KUBERNETES_NAMESPACE}"
-                    echo "Cluster Master: ${KUBERNETES_MASTER}"
-                    echo ""
-                    
-                    // Verify kubectl is available
-                    sh '''
-                        if ! command -v kubectl &> /dev/null; then
-                            echo "ERROR: kubectl not found. Installing kubectl..."
-                            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-                            chmod +x kubectl
-                            sudo mv kubectl /usr/local/bin/
-                        fi
-                        kubectl version --client
-                    '''
-                    
-                    // Check cluster connectivity
-                    sh """
-                        echo "Checking Kubernetes cluster connectivity..."
-                        kubectl cluster-info || echo "WARNING: Cannot connect to cluster. Verify kubeconfig."
-                        kubectl get nodes
-                    """
-                    
-                    // Create namespace if it doesn't exist
-                    sh """
-                        echo "Ensuring namespace exists..."
-                        kubectl get namespace ${KUBERNETES_NAMESPACE} || kubectl create namespace ${KUBERNETES_NAMESPACE}
-                    """
-                    
-                    // Create/update image pull secret
-                    withCredentials([usernamePassword(credentialsId: 'nexus-docker-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        def imageTag = "${DOCKER_USER}/${IMAGE_NAME}:${version}-${BUILD_NUMBER}"
+                        
+                        echo "=========================================="
+                        echo "Deploying to Kubernetes Cluster"
+                        echo "=========================================="
+                        echo "Image: ${imageTag}"
+                        echo "Namespace: ${KUBERNETES_NAMESPACE}"
+                        echo "Cluster Master: ${KUBERNETES_MASTER}"
+                        echo ""
+                        
+                        // Verify kubectl is available (install to workspace if needed, no sudo required)
+                        sh '''
+                            if ! command -v kubectl &> /dev/null; then
+                                echo "kubectl not found. Installing to workspace directory..."
+                                KUBECTL_DIR="$WORKSPACE/bin"
+                                mkdir -p "$KUBECTL_DIR"
+                                
+                                KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+                                echo "Downloading kubectl version: $KUBECTL_VERSION"
+                                curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+                                chmod +x kubectl
+                                mv kubectl "$KUBECTL_DIR/kubectl"
+                                
+                                # Add to PATH for this session
+                                export PATH="$KUBECTL_DIR:$PATH"
+                                echo "✓ kubectl installed to $KUBECTL_DIR"
+                            fi
+                            
+                            # Ensure kubectl is in PATH
+                            export PATH="$WORKSPACE/bin:$PATH"
+                            kubectl version --client
+                        '''
+                        
+                        // Check cluster connectivity
                         sh """
-                            echo "Creating/updating image pull secret..."
-                            kubectl create secret docker-registry nexus-docker-registry-secret \
-                                --docker-server=${NEXUS_DOCKER_REGISTRY} \
+                            export PATH="\$WORKSPACE/bin:\$PATH"
+                            echo "Checking Kubernetes cluster connectivity..."
+                            kubectl cluster-info || echo "WARNING: Cannot connect to cluster. Verify kubeconfig."
+                            kubectl get nodes
+                        """
+                        
+                        // Create namespace if it doesn't exist
+                        sh """
+                            export PATH="\$WORKSPACE/bin:\$PATH"
+                            echo "Ensuring namespace exists..."
+                            kubectl get namespace ${KUBERNETES_NAMESPACE} || kubectl create namespace ${KUBERNETES_NAMESPACE}
+                        """
+                        
+                        // Create/update image pull secret for Docker Hub
+                        sh """
+                            export PATH="\$WORKSPACE/bin:\$PATH"
+                            echo "Creating/updating Docker Hub image pull secret..."
+                            kubectl create secret docker-registry docker-hub-registry-secret \
+                                --docker-server=${DOCKER_HUB_REGISTRY} \
                                 --docker-username=\${DOCKER_USER} \
                                 --docker-password=\${DOCKER_PASS} \
                                 --namespace=${KUBERNETES_NAMESPACE} \
                                 --dry-run=client -o yaml | kubectl apply -f -
                         """
-                    }
                     
-                    // Update deployment manifest with new image tag
-                    sh """
-                        echo "Updating deployment with image: ${imageTag}"
-                        # Create temporary deployment file with updated image
-                        sed 's|image:.*geological-sample-api.*|image: ${imageTag}|g' k8s/deployment.yaml > k8s/deployment-${BUILD_NUMBER}.yaml
-                    """
-                    
-                    // Apply Kubernetes manifests
-                    sh """
-                        echo "Applying Kubernetes manifests..."
-                        kubectl apply -f k8s/namespace.yaml
-                        kubectl apply -f k8s/deployment-${BUILD_NUMBER}.yaml
-                        kubectl apply -f k8s/service.yaml
-                    """
-                    
-                    // Wait for deployment rollout
-                    sh """
-                        echo "Waiting for deployment rollout..."
-                        kubectl rollout status deployment/geological-sample-api \
-                            -n ${KUBERNETES_NAMESPACE} \
-                            --timeout=300s
-                    """
-                    
-                    // Verify deployment
-                    sh """
+                        // Update deployment manifest with new image tag
+                        sh """
+                            echo "Updating deployment with image: ${imageTag}"
+                            # Create temporary deployment file with updated image
+                            sed 's|image:.*geological-sample-api.*|image: ${imageTag}|g' k8s/deployment.yaml > k8s/deployment-${BUILD_NUMBER}.yaml
+                        """
+                        
+                        // Apply Kubernetes manifests
+                        sh """
+                            export PATH="\$WORKSPACE/bin:\$PATH"
+                            echo "Applying Kubernetes manifests..."
+                            kubectl apply -f k8s/namespace.yaml
+                            kubectl apply -f k8s/deployment-${BUILD_NUMBER}.yaml
+                            kubectl apply -f k8s/service.yaml
+                        """
+                        
+                        // Wait for deployment rollout
+                        sh """
+                            export PATH="\$WORKSPACE/bin:\$PATH"
+                            echo "Waiting for deployment rollout..."
+                            if kubectl rollout status deployment/geological-sample-api \
+                                -n ${KUBERNETES_NAMESPACE} \
+                                --timeout=300s 2>&1; then
+                                echo "✓ Deployment rollout successful"
+                            else
+                                ROLLOUT_ERROR=\$?
+                                echo ""
+                                echo "=========================================="
+                                echo "ERROR: Deployment rollout failed or timed out"
+                                echo "=========================================="
+                                echo ""
+                                echo "Checking pod status and events..."
+                                echo ""
+                                echo "=== Pod Status ==="
+                                kubectl get pods -n ${KUBERNETES_NAMESPACE} -l app=geological-sample-api
+                                echo ""
+                                echo "=== Pod Events ==="
+                                kubectl get events -n ${KUBERNETES_NAMESPACE} --sort-by='.lastTimestamp' | tail -20
+                                echo ""
+                                echo "=== Pod Describe (for detailed errors) ==="
+                                POD_NAME=\$(kubectl get pods -n ${KUBERNETES_NAMESPACE} -l app=geological-sample-api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+                                if [ -n "\$POD_NAME" ]; then
+                                    kubectl describe pod \$POD_NAME -n ${KUBERNETES_NAMESPACE} | tail -50
+                                fi
+                                echo ""
+                                echo "=========================================="
+                                echo "TROUBLESHOOTING: Image Pull Failure"
+                                echo "=========================================="
+                                echo ""
+                                echo "The error 'trying and failing to pull image' usually means:"
+                                echo "1. Image pull secret is not working correctly"
+                                echo "2. Network connectivity issues to Docker Hub"
+                                echo "3. Docker Hub authentication failed"
+                                echo ""
+                                echo "SOLUTION: Verify Docker Hub image pull secret"
+                                echo ""
+                                echo "Verify image pull secret exists:"
+                                echo "  kubectl get secret docker-hub-registry-secret -n ${KUBERNETES_NAMESPACE}"
+                                echo ""
+                                echo "Check secret details:"
+                                echo "  kubectl describe secret docker-hub-registry-secret -n ${KUBERNETES_NAMESPACE}"
+                                echo ""
+                                echo "Verify Docker Hub credentials are correct in Jenkins credentials store"
+                                echo ""
+                                exit \${ROLLOUT_ERROR}
+                            fi
+                        """
+                        
+                        // Verify deployment
+                        sh """
+                            export PATH="\$WORKSPACE/bin:\$PATH"
+                            echo ""
+                            echo "=========================================="
+                            echo "Deployment Verification"
+                            echo "=========================================="
+                            echo ""
+                            echo "=== Pods Status ==="
+                            kubectl get pods -n ${KUBERNETES_NAMESPACE} -l app=geological-sample-api
+                            echo ""
+                            echo "=== Service Status ==="
+                            kubectl get svc -n ${KUBERNETES_NAMESPACE}
+                            echo ""
+                            echo "=== Deployment Status ==="
+                            kubectl get deployment -n ${KUBERNETES_NAMESPACE}
+                        """
+                        
+                        // Get service details
+                        def nodePort = sh(
+                            script: "export PATH=\"\$WORKSPACE/bin:\$PATH\" && kubectl get svc geological-sample-api -n ${KUBERNETES_NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo '30080'",
+                            returnStdout: true
+                        ).trim()
+                        
+                        def workerNodes = sh(
+                            script: "export PATH=\"\$WORKSPACE/bin:\$PATH\" && kubectl get nodes -o jsonpath='{.items[?(@.metadata.labels.kubernetes\\.io/role==\"node\")].status.addresses[?(@.type==\"InternalIP\")].address}'",
+                            returnStdout: true
+                        ).trim()
+                        
+                        def workerIPs = workerNodes.split('\\s+')
+                        def primaryWorkerIP = workerIPs.length > 0 ? workerIPs[0] : '10.2.0.14'
+                        
                         echo ""
                         echo "=========================================="
-                        echo "Deployment Verification"
+                        echo "SUCCESS: Application Deployed to Kubernetes"
                         echo "=========================================="
+                        echo "Image Tag: ${imageTag}"
+                        echo "Namespace: ${KUBERNETES_NAMESPACE}"
                         echo ""
-                        echo "=== Pods Status ==="
-                        kubectl get pods -n ${KUBERNETES_NAMESPACE} -l app=geological-sample-api
+                        echo "Access URLs:"
+                        echo "  Worker Node 1: http://${primaryWorkerIP}:${nodePort}"
+                        if (workerIPs.length > 1) {
+                            echo "  Worker Node 2: http://${workerIPs[1]}:${nodePort}"
+                        }
                         echo ""
-                        echo "=== Service Status ==="
-                        kubectl get svc -n ${KUBERNETES_NAMESPACE}
-                        echo ""
-                        echo "=== Deployment Status ==="
-                        kubectl get deployment -n ${KUBERNETES_NAMESPACE}
-                    """
-                    
-                    // Get service details
-                    def nodePort = sh(
-                        script: "kubectl get svc geological-sample-api -n ${KUBERNETES_NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo '30080'",
-                        returnStdout: true
-                    ).trim()
-                    
-                    def workerNodes = sh(
-                        script: "kubectl get nodes -o jsonpath='{.items[?(@.metadata.labels.kubernetes\\.io/role==\"node\")].status.addresses[?(@.type==\"InternalIP\")].address}'",
-                        returnStdout: true
-                    ).trim()
-                    
-                    def workerIPs = workerNodes.split('\\s+')
-                    def primaryWorkerIP = workerIPs.length > 0 ? workerIPs[0] : '10.2.0.14'
-                    
-                    echo ""
-                    echo "=========================================="
-                    echo "SUCCESS: Application Deployed to Kubernetes"
-                    echo "=========================================="
-                    echo "Image Tag: ${imageTag}"
-                    echo "Namespace: ${KUBERNETES_NAMESPACE}"
-                    echo ""
-                    echo "Access URLs:"
-                    echo "  Worker Node 1: http://${primaryWorkerIP}:${nodePort}"
-                    if (workerIPs.length > 1) {
-                        echo "  Worker Node 2: http://${workerIPs[1]}:${nodePort}"
+                        echo "Health Check:"
+                        echo "  http://${primaryWorkerIP}:${nodePort}/healthcheck"
+                        echo "=========================================="
+                        
+                        // Test health endpoint
+                        sh """
+                            echo "Testing health endpoint..."
+                            sleep 10
+                            curl -s http://${primaryWorkerIP}:${nodePort}/healthcheck || echo "Health check not yet available (application may still be starting)"
+                        """
+                        
+                        // Cleanup temporary file
+                        sh "rm -f k8s/deployment-${BUILD_NUMBER}.yaml || true"
                     }
-                    echo ""
-                    echo "Health Check:"
-                    echo "  http://${primaryWorkerIP}:${nodePort}/healthcheck"
-                    echo "=========================================="
-                    
-                    // Test health endpoint
-                    sh """
-                        echo "Testing health endpoint..."
-                        sleep 10
-                        curl -s http://${primaryWorkerIP}:${nodePort}/healthcheck || echo "Health check not yet available (application may still be starting)"
-                    """
-                    
-                    // Cleanup temporary file
-                    sh "rm -f k8s/deployment-${BUILD_NUMBER}.yaml || true"
                 }
             }
         }
         
-        stage('11. Deploy to Tomcat') {
-            when {
-                expression { return false }  // Disabled by default, set to true if needed
-            }
-            steps {
-                script {
-                    // Find WAR file dynamically
-                    def warFile = sh(
-                        script: 'find target -name "*.war" -type f | grep -v "original" | head -1',
-                        returnStdout: true
-                    ).trim()
-                    
-                    if (!warFile) {
-                        error "No WAR file found in target directory. Build may have failed."
-                    }
-                    
-                    echo "Found WAR file: ${warFile}"
-                    
-                    def pom = readMavenPom file: 'pom.xml'
-                    def appName = pom.artifactId
-                    
-                    echo "Deploying ${warFile} to Tomcat as /${appName}..."
-                    
-                    withCredentials([usernamePassword(credentialsId: 'tomcat-credentials', usernameVariable: 'TOMCAT_USER', passwordVariable: 'TOMCAT_PASS')]) {
-                        // Stop and undeploy
-                        sh """
-                            curl -s -u \${TOMCAT_USER}:\${TOMCAT_PASS} \
-                                "${TOMCAT_MANAGER_URL}/stop?path=/${appName}" || echo "Stop: App not running"
-                            curl -s -u \${TOMCAT_USER}:\${TOMCAT_PASS} \
-                                "${TOMCAT_MANAGER_URL}/undeploy?path=/${appName}" || echo "Undeploy: Nothing to remove"
-                        """
-                        
-                        sleep(time: 3, unit: 'SECONDS')
-                        
-                        // Deploy WAR
-                        sh """
-                            curl -s -u \${TOMCAT_USER}:\${TOMCAT_PASS} \
-                                --upload-file ${warFile} \
-                                "${TOMCAT_MANAGER_URL}/deploy?path=/${appName}&update=true"
-                        """
-                        
-                        // Wait longer for Spring Boot to start
-                        echo "Waiting for application to start (this may take 30-60 seconds)..."
-                        sleep(time: 15, unit: 'SECONDS')
-                        
-                        // Check deployment status multiple times
-                        def maxAttempts = 6
-                        def attempt = 0
-                        def deployed = false
-                        
-                        while (attempt < maxAttempts && !deployed) {
-                            attempt++
-                            echo "Checking deployment status (attempt ${attempt}/${maxAttempts})..."
-                            
-                            def status = sh(
-                                script: """
-                                    curl -s -u \${TOMCAT_USER}:\${TOMCAT_PASS} "${TOMCAT_MANAGER_URL}/list" | grep "/${appName}" || echo "not-found"
-                                """,
-                                returnStdout: true
-                            ).trim()
-                            
-                            if (status.contains("running")) {
-                                deployed = true
-                                echo "SUCCESS: Application is running"
-                                echo "Status: ${status}"
-                            } else {
-                                echo "Application not running yet, waiting 10 more seconds..."
-                                sleep(time: 10, unit: 'SECONDS')
-                            }
-                        }
-                        
-                        if (!deployed) {
-                            echo "WARNING: Application may not have started yet. Checking Tomcat logs..."
-                            echo "Please check Tomcat logs manually for startup errors."
-                            echo "Application URL: ${TOMCAT_URL}/${appName}"
-                            echo "Health check URL: ${TOMCAT_URL}/${appName}/healthcheck"
-                        } else {
-                            // Test the health endpoint
-                            echo "Testing health endpoint..."
-                            sh """
-                                curl -s "${TOMCAT_URL}/${appName}/healthcheck" || echo "Health check failed"
-                            """
-                        }
-                    }
-                }
-            }
-        }
     }
     
     post {
         success {
             script {
                 def nodePort = sh(
-                    script: "kubectl get svc geological-sample-api -n ${KUBERNETES_NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo '30080'",
+                    script: "export PATH=\"\$WORKSPACE/bin:\$PATH\" && kubectl get svc geological-sample-api -n ${KUBERNETES_NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo '30080'",
                     returnStdout: true
                 ).trim()
                 def workerIPs = sh(
-                    script: "kubectl get nodes -o jsonpath='{.items[?(@.metadata.labels.kubernetes\\.io/role==\"node\")].status.addresses[?(@.type==\"InternalIP\")].address}'",
+                    script: "export PATH=\"\$WORKSPACE/bin:\$PATH\" && kubectl get nodes -o jsonpath='{.items[?(@.metadata.labels.kubernetes\\.io/role==\"node\")].status.addresses[?(@.type==\"InternalIP\")].address}'",
                     returnStdout: true
                 ).trim().split('\\s+')
                 def primaryWorkerIP = workerIPs.length > 0 ? workerIPs[0] : '10.2.0.14'
@@ -628,6 +449,7 @@ EOF
             script {
                 // Show Kubernetes pod logs on failure
                 sh """
+                    export PATH="\$WORKSPACE/bin:\$PATH"
                     echo "=== Recent Pod Logs ==="
                     kubectl logs -n ${KUBERNETES_NAMESPACE} -l app=geological-sample-api --tail=50 || echo "Could not retrieve logs"
                 """
